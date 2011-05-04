@@ -1,0 +1,15 @@
+{
+  "author": "William T. Olson <wtolson@gmail.com>",
+  "name": "filestream",
+  "description": "Non blocking file streaming utility.",
+  "version": "0.0.0",
+  "repository": {
+    "url": ""
+  },
+  "main": "./filestream"
+  "engines": {
+    "node": "~v0.4.7"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
