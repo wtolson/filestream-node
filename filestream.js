@@ -11,22 +11,32 @@
   function Queue() {
     var queue = [];
     var running = false;
+
+    function resolve() {
+      var args = Array.prototype.slice.call(arguments);
+
+      var cb = args.shift();
+      if (typeof cb === "function") {
+        cb.apply(null, args);
+      }
+      
+      if (queue.length) {
+        var task = queue.shift();
+        task.fn.apply(task.that, task.args);
+      } else {
+        running = false;
+      }
+    };
     
     return {
-      addTask: function(fn, that, args) {
+      addTask: function(fn, that, args, cb) {
+        args = Array.prototype.slice.call(args);
+        args.unshift(resolve.bind(null,cb));
         if (running) {
           queue.push({fn: fn, that: that, args: args});
         } else {
           running = true;
           fn.apply(that, args);
-        }
-      },
-      doNext: function() {
-        if (queue.length) {
-          var task = queue.shift();
-          task.fn.apply(task.that, task.args);
-        } else {
-          running = false;
         }
       }
     };
@@ -63,116 +73,94 @@
       });
     };
 
-    function do_read(n, cb) {
+    function do_read(resolve, n) {
       if (!stream.readable) {
-        finish(new Error("Stream is not readable"));
-      }
-      var data = [];
-      if (typeof cb === 'undefined') {
-        cb = n;
-        n = null;
+        resolve(new Error("Stream is not readable"));
+        return;
       }
 
       if (n < 0) {
         n = null;
       }
+      n = n || null;
 
-      function finish(err) {
-        if (err) {
-          cb && cb(err);
-        } else {
-          cb && cb(null, data.join(''));
-        }
-        queue.doNext();
-      };
-
+      var data = [];
 
       (function grabBuffer(err) {
         if (err) {
-          return finish(err);
-        }
-
-        if (bufferStart == bufferEnd) {
+          resolve(err);
+          return;
+        } else if (bufferStart == bufferEnd) {
           if (foundEOF) {
-            return finish();
+            resolve(null, data.join(''));
+            return;
+          } else {
+            fillBuffer(grabBuffer);
+            return;
           }
-
-          return fillBuffer(grabBuffer);
-        }
-          
-        var frag = buffer.toString(stream.encoding, bufferStart, bufferEnd);
-        if (n === null || n > frag.length) {
-          data.push(frag);
-          n -= frag.length;
-          return fillBuffer(grabBuffer);
         } else {
-          data.push(frag.substr(0,n));
-          bufferStart += n;
-          return finish();
+          var frag = buffer.toString(stream.encoding, bufferStart, bufferEnd);
+          if (n === null || n > frag.length) {
+            data.push(frag);
+            n -= frag.length;
+            fillBuffer(grabBuffer);
+            return;
+          } else {
+            data.push(frag.substr(0,n));
+            bufferStart += n;
+            resolve(null, data.join(''));
+            return;
+          }
         }
       })();
     };
 
-    function do_readline(cb) {
+    function do_readline(resolve) {
       if (!stream.readable) {
-        finish(new Error("Stream is not readable"));
+        resolve(new Error("Stream is not readable"));
+        return;
       }
 
       var line = [];
-      function finish(err) {
-        if (err) {
-          cb && cb(err);
-        } else {
-          cb && cb(null, line.join(''));
-        }
-        queue.doNext();
-      };
 
       (function grabBuffer(err) {
         if (err) {
-          return finish(err);
+          resolve(err);
+          return;
         }
 
         if (bufferStart == bufferEnd) {
           if (foundEOF) {
-            return finish();
+            resolve(null, line.join(''));
+            return; 
           }
 
-          return fillBuffer(grabBuffer);
+          fillBuffer(grabBuffer);
+          return;
         }
 
         var frag = buffer.toString(stream.encoding, bufferStart, bufferEnd);
         var end = frag.indexOf(stream.newlines);
         if (end === -1) {
           line.push(frag);
-          return fillBuffer(grabBuffer);
+          fillBuffer(grabBuffer);
+          return;
         } else {
           line.push(frag.substr(0,end));
           bufferStart += end+1;
-          return finish();
+          resolve(null, line.join(''));
+          return;
         }
       })();
     };
 
-    function do_seek(offset, whence, cb) {
-      if (typeof cb === 'undefined') {
-        cb = whence;
-        whence = 0;
-      }
+    function do_seek(resolve, offset, whence) {
       whence = whence || 0;
-
-      function finish(err) {
-        if (err) {
-          cb && cb(err);
-        } else {
-          cb && cb(null);
-        }
-        queue.doNext();
-      };
 
       fs.stat(path, function(err, stats) {
         if (err) {
-          return finish(err);
+          resolve(err);
+          return;
         }
 
         var size = stats.blksize;
@@ -185,11 +173,13 @@
         } else if (whence === 2) {
           newPos = size + offset;
         } else {
-          return finish(new Error("Unknown whence"));
+          resolve(new Error("Unknown whence"));
+          return;
         }
 
         if (newPos < 0 || newPos >= size) {
-          return finish(new Error("Invalid offset"));
+          resolve(new Error("Invalid offset"));
+          return;
         }
 
         filePos = newPos;
@@ -198,7 +188,7 @@
         bufferStart = 0;
         bufferEnd = 0;
 
-        finish();
+        resolve();
       });
     };
 
@@ -208,11 +198,15 @@
       encoding: options.encoding || defaults.encoding,
 
       read: function(n, cb) {
-        queue.addTask(do_read, this, arguments);
+        if (typeof cb == "undefined" && typeof n == "function") {
+          cb = n;
+          n = null;
+        }
+        queue.addTask(do_read, this, [n], cb);
       },
 
       readline: function(cb) {
-        queue.addTask(do_readline, this, arguments);
+        queue.addTask(do_readline, this, [], cb);
       },
 
       get readable() {
@@ -228,7 +222,12 @@
       },
 
       seek: function(offset, whence, cb) {
-        queue.addTask(do_seek, this, arguments);
+        if (typeof cb == "undefined" && typeof whence == "function") {
+          var temp = cb;
+          cb = whence;
+          whence = temp;
+        }
+        queue.addTask(do_seek, this, [offset, whence], cb);
       },
 
       close: function(cb) {
@@ -256,7 +255,9 @@
 
       closed = false;
       file = fd;
-      cb && cb(null, stream);
+      if (typeof cb === "function") {
+        cb(null, stream);
+      }
     });
 
 
