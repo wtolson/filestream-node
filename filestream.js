@@ -55,6 +55,7 @@
 
     var bufferStart = 0;
     var bufferEnd = 0;
+    var bufferEndPos = 0;
     var bufferSize = options.bufferSize || defaults.bufferSize;
     var buffer = new Buffer(bufferSize);
 
@@ -65,6 +66,7 @@
         filePos += bytesRead;
         bufferStart = 0;
         bufferEnd = bytesRead;
+        bufferEndPos = filePos;
         if (bytesRead < bufferSize) {
           foundEOF = true;
         }
@@ -182,11 +184,13 @@
           return;
         }
 
+        bufferStart = bufferEnd + (newPos - bufferEndPos);
+        if (bufferStart < 0 || bufferStart > bufferEnd) {
+          bufferStart = bufferEnd;
+        }
+
         filePos = newPos;
         foundEOF = false;
-
-        bufferStart = 0;
-        bufferEnd = 0;
 
         resolve();
       });
